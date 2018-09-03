@@ -1,0 +1,126 @@
+---
+
+groups:
+  - name: group1
+    jobs:
+      - build-cpi
+      - build-director
+
+
+      
+shared:
+  - &prepare-director
+    task: prepare-director
+    file: pipelines/shared/tasks/prepare-director.yml
+    params: &prepare-director-params
+      INFRASTRUCTURE:     azure
+      DIRECTOR_VARS_FILE: {{azure_director_vars_file}}
+  - &deploy-director
+    task: deploy-director
+    file: pipelines/shared/tasks/deploy-director.yml
+      
+      
+jobs:
+  - name: build-cpi
+    serial: true
+    plan:
+      - aggregate:
+        - {trigger: false, get: bosh-cpi-src}
+        - {trigger: false, get: bosh-azure-acceptance-tests}
+        - {trigger: false, get: version-semver, params: {bump: patch}}
+        - {trigger: false, get: bosh-cli}
+      - put: version-semver
+        params: {file: version-semver/number}
+      - task: build
+        file: bosh-azure-acceptance-tests/pipelines/tasks/build-cpi.yml
+      - put: bosh-cpi-dev-artifacts
+        params: {file: candidate/*.tgz}
+        
+  - name: build-director
+    serial: true
+    plan:
+      - aggregate:
+        - {get: bosh-cpi-release, trigger: false,  resource: bosh-cpi-dev-artifacts, passed: [build-cpi]}
+        - {get: bosh-azure-acceptance-tests, trigger: false}
+        - {get: bosh-deployment, trigger: false}
+        - {get: pipelines,       trigger: false}
+        - {get: bosh-cli,        trigger: false}
+      - do:
+        - <<: *prepare-director
+          params:
+            <<: *prepare-director-params
+            OPTIONAL_OPS_FILE: |
+              -o pipelines/shared/assets/ops/remove-hm.yml
+              -o bosh-deployment/external-ip-with-registry-not-recommended.yml
+              -o bosh-deployment/azure/use-managed-disks.yml
+        - <<: *deploy-director
+      - put: bosh-director-state
+  
+resource_types:
+  - name: terraform_type
+    type: docker-image
+    source:
+      repository: ljfranklin/terraform-resource
+      tag: beta-backend
+  - name: azure-blob
+    type: docker-image
+    source:
+      repository: cfcloudops/azure-blobstore-concourse-resource
+    
+resources:
+
+  - name: bosh-azure-acceptance-tests
+    type: git
+    source:
+      uri: https://github.com/gossion/bosh-azure-acceptance-tests
+      branch: master
+  - name: bosh-cpi-src
+    type: git
+    source:
+      uri: https://github.com/gossion/bosh-azure-cpi-release.git
+      branch: develop
+      ignore_paths:
+        - .final_builds/**/*.yml
+        - releases/**/*.yml
+  - name: bosh-deployment
+    type: git
+    source:
+      uri: https://github.com/cloudfoundry/bosh-deployment
+      branch: master
+  - name: pipelines
+    type: git
+    source:
+      uri: https://github.com/cloudfoundry-incubator/bosh-cpi-certification
+      branch: master
+      
+  - name: bosh-cpi-dev-artifacts
+    type: azure-blob
+    source:
+      storage_account_name: {{storage_account_name}}
+      storage_access_key:   {{storage_account_access_key}}
+      container:            {{dev_artifacts_container_name}}
+      regexp: bosh-azure-cpi-(\d+\.\d+\.\d+)\.tgz
+
+  - name: bosh-director-state
+    type: azure-blob
+    source:
+      storage_account_name: {{storage_account_name}}
+      storage_access_key:   {{storage_account_access_key}}
+      container:            {{dev_artifacts_container_name}}
+      regexp: director.env 
+      
+  - name: version-semver
+    type: semver
+    source:
+      file:        current-version # dev-release version
+      driver:      git
+      uri:         {{version_semver_repo_uri}}
+      branch:      {{version_semver_repo_branch}}
+      private_key: {{version_semver_repo_private_key}}
+  
+  - name: bosh-cli
+    type: s3
+    source:
+      regexp: bosh-cli-([0-9.]+)-linux-amd64
+      bucket: bosh-cli-artifacts
+      region_name: us-east-1

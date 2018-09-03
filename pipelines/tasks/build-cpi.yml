@@ -1,0 +1,17 @@
+---
+platform: linux
+image_resource:
+  type: docker-image
+  source: {repository: boshcpi/azure-cpi-release}
+
+inputs:
+  - name: bosh-cpi-src
+  - name: bosh-azure-acceptance-tests
+  - name: version-semver
+  - name: bosh-cli
+
+outputs:
+  - name: candidate
+
+run:
+  path: bosh-azure-acceptance-tests/pipelines/tasks/build-cpi.sh
